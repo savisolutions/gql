@@ -33,6 +33,43 @@ GQL.query("query Launch($launch_id: ID!) { launch(id: $launch_id) { details } }"
 
 See [`GQL` docs](https://hexdocs.pm/gql/GQL.html) for details.
 
+## Configuring the Finch pool (TLS / transport options)
+
+`GQL` starts its own Finch pool named `GQL.Finch`. Because `Finch.request/3`
+(and therefore `http_options`) does not accept transport options, the only way
+to set them — e.g. TLS options — is to configure the pool. Set `:finch_pools`
+and it is passed straight through as Finch's `:pools` option:
+
+```elixir
+config :gql,
+  finch_pools: %{
+    default: [conn_opts: [transport_opts: [verify: :verify_none]]]
+  }
+```
+
+### Working around OTP's strict extended key usage check (CVE-2024-53846)
+
+Recent Erlang/OTP releases (25.3.2.8+, 26.2+, 27.0+) reject otherwise-valid
+certificate chains whose intermediate CA carries an `extendedKeyUsage`
+extension, failing the handshake with
+`{:tls_alert, {:unsupported_certificate, ...key_usage_mismatch...}}`
+(see [erlang/otp#9329](https://github.com/erlang/otp/issues/9329)).
+
+`GQL.lenient_eku_transport_opts/1` returns `transport_opts` that keep full peer
+verification (trusted-root chain validation, expiry, and hostname checks) while
+ignoring *only* that spurious error — unlike `verify: :verify_none`, MITM
+protection stays intact:
+
+```elixir
+config :gql,
+  finch_pools: %{
+    default: [conn_opts: [transport_opts: GQL.lenient_eku_transport_opts()]]
+  }
+```
+
+Note: `allow_any_ca_purpose: true` does *not* resolve this for all affected
+chains, and forcing TLS 1.2 does not help either.
+
 ## Fragments
 
 This library does not support GraphQL fragments. I'm open to pull-requests but this is not something that is a priority to me.

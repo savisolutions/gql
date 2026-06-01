@@ -3,6 +3,61 @@ defmodule GQL do
   Simple GraphQL client.
   """
 
+  @doc """
+  Returns Finch `transport_opts` that keep full TLS verification while tolerating
+  Erlang/OTP's overly strict extended key usage validation (CVE-2024-53846).
+
+  Recent OTP releases (25.3.2.8+, 26.2+, 27.0+) reject otherwise-valid certificate
+  chains whose intermediate CA carries an `extendedKeyUsage` extension, failing the
+  handshake with `{:tls_alert, {:unsupported_certificate, ...key_usage_mismatch...}}`
+  (see https://github.com/erlang/otp/issues/9329). These opts perform normal peer
+  verification — trusted-root chain validation, certificate expiry, and hostname
+  matching are all still enforced — but a custom `verify_fun` ignores *only* the
+  spurious `:key_usage_mismatch` error. This keeps MITM protection intact, unlike
+  `verify: :verify_none`.
+
+  Intended for use with the `:finch_pools` application config:
+
+      config :gql,
+        finch_pools: %{
+          default: [conn_opts: [transport_opts: GQL.lenient_eku_transport_opts()]]
+        }
+
+  Extra ssl options can be appended via `extra` (they take precedence on conflict).
+  """
+  @spec lenient_eku_transport_opts(keyword()) :: keyword()
+  def lenient_eku_transport_opts(extra \\ []) do
+    Keyword.merge(
+      [
+        verify: :verify_peer,
+        cacerts: :public_key.cacerts_get(),
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ],
+        verify_fun: {&__MODULE__.verify_ignoring_eku_mismatch/3, []}
+      ],
+      extra
+    )
+  end
+
+  @doc """
+  `verify_fun` used by `lenient_eku_transport_opts/1`. Accepts only the spurious
+  `:key_usage_mismatch` error (CVE-2024-53846); every other certificate problem is
+  still rejected.
+  """
+  @spec verify_ignoring_eku_mismatch(
+          :public_key.der_encoded() | :public_key.combined_cert(),
+          {:bad_cert, term()} | {:extension, term()} | :valid | :valid_peer,
+          term()
+        ) :: {:valid, term()} | {:fail, term()} | {:unknown, term()}
+  def verify_ignoring_eku_mismatch(_cert, {:bad_cert, {:key_usage_mismatch, _}}, state),
+    do: {:valid, state}
+
+  def verify_ignoring_eku_mismatch(_cert, {:bad_cert, reason}, _state), do: {:fail, reason}
+  def verify_ignoring_eku_mismatch(_cert, {:extension, _}, state), do: {:unknown, state}
+  def verify_ignoring_eku_mismatch(_cert, :valid, state), do: {:valid, state}
+  def verify_ignoring_eku_mismatch(_cert, :valid_peer, state), do: {:valid, state}
+
   defmodule Behaviour do
     @moduledoc """
     Behaviour that `GQL` implements.
